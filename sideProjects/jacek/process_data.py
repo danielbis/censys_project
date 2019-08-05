@@ -5,11 +5,18 @@ import json
 import os
 import time
 from collections import Counter
-
+import pandas as pd
 
 JSON_DATA_DIR = "/Users/daniel/Desktop/sideProjects/jacek/json_data"
 
 MIRAI_PATH = "/Users/daniel/Desktop/sideProjects/jacek/mirai_enriched_2018_07_03_2019.csv"
+# indices
+PREFIX = 17
+COUNTRY = 15
+ASN = 10
+FSEEN = 7
+LSEEN = 8
+DST_PORT = 3
 
 
 def load_scan(file_path):
@@ -29,6 +36,9 @@ def load_mirai_ips_filter_date_port(path_to_mirai,
                                     filter_port=False,
                                     filter_date=False):
     """
+    This method loads data from mirai csv file into memory.
+    Different combinations of port and date filter can applied
+    according to the parameters listed below.
 
     :param path_to_mirai absolute path to csv
     :param date_limit: string in format %Y-%m-%dT%H:%M:%SZ
@@ -39,9 +49,9 @@ def load_mirai_ips_filter_date_port(path_to_mirai,
     """
     ips = set()
     start_date = time.mktime(datetime.datetime.strptime(date_limit, "%Y-%m-%dT%H:%M:%SZ").timetuple())
-    _INDEX = 7
+    _INDEX = FSEEN
     if seen == "lseen":
-        _INDEX = 8
+        _INDEX = LSEEN
 
     mirai_file = open(path_to_mirai, "r")
     mirai_reader = csv.reader(mirai_file, dialect='excel')
@@ -49,11 +59,9 @@ def load_mirai_ips_filter_date_port(path_to_mirai,
     for row in mirai_reader:
         # Checks
         if not isinstance(row[0], str):
-            print('Not a string!!!', row[0])
-            break
+            raise ValueError('Not a string: %s' % row[0])
         if " " in row[0]:
-            print("Whitespace", row[0])
-            break
+            raise ValueError("IP contains Whitespace %s" % row[0])
 
         if len(row[0]) > 2:  # apply different matching filter below
             if not filter_date:
@@ -62,13 +70,13 @@ def load_mirai_ips_filter_date_port(path_to_mirai,
                 else:
                     if int(row[3]) == 23 or int(row[3]) == 2323:
                         ips.add(row[0])
-            else:
+            else:  # Use only rows after some point at time
                 noted_on = time.mktime(datetime.datetime.strptime(row[_INDEX], "%Y-%m-%dT%H:%M:%SZ").timetuple())
                 if noted_on >= start_date:
-                    if not filter_port:
+                    if not filter_port:  # Do not filter ports
                         ips.add(row[0])
                     else:
-                        if int(row[3]) == 23 or int(row[3]) == 2323:
+                        if int(row[3]) == 23 or int(row[3]) == 2323:  # filter ports
                             ips.add(row[0])
 
     return ips
@@ -80,9 +88,9 @@ def load_censys_ips(dir_path):
     :param dir_path:
     :return: set of unique ids from censys files
     """
-    ips = set()
+    ips = set()  # stores elements without repetitions
     ips_banners = dict()
-    files = os.listdir(dir_path)
+    files = os.listdir(dir_path)  # list all files from the directory
     old_size = 0
     for _file in files:
         print("processing file: ", _file)
@@ -91,12 +99,12 @@ def load_censys_ips(dir_path):
         for d in data:
             d = json.loads(d)
             if not isinstance(d['ip'], str):
-                print('Not a string!!!', d['ip'])
-                break
+                raise ValueError('Not a string: %s' % d['ip'])
             if " " in d['ip']:
-                print("Whitespace", d['ip'])
-                break
+                raise ValueError("IP contains Whitespace %s" %d['ip'])
+            # passed the checks, add to the set
             ips.add(d['ip'])
+
             try:
                 if len(base64.b64decode(d['banner'])) > 0:
                     ips_banners[d['ip']] = d['banner']
@@ -104,6 +112,43 @@ def load_censys_ips(dir_path):
                 continue
         print("Added %d ips from this file" % (len(ips) - old_size))
         old_size = len(ips)
+
+    return ips, ips_banners
+
+
+def load_censys_ips_v2(dir_path):
+    """
+
+    :param dir_path:
+    :return: set of unique ids from censys files
+    """
+    ips = set()  # stores elements without repetitions
+    ips_banners = dict()
+    files = os.listdir(dir_path)  # list all files from the directory
+    old_size = 0
+    for _file in files:
+        print("processing file: ", _file)
+        data = load_scan(dir_path + "/" + _file)
+        print("Number of lines in the file: ", len(data))
+        for d in data:
+            d = json.loads(d)
+            if 23 or 2323 not in d["ports"]:
+                continue  # not using port 23 or 2323 -> skip it
+            if not isinstance(d['ip'], str):
+                raise ValueError('Not a string: %s' % d['ip'])
+            if " " in d['ip']:
+                raise ValueError("IP contains Whitespace %s" %d['ip'])
+            # passed the checks, add to the set
+            ips.add(d['ip'])
+
+            try:
+                if len(base64.b64decode(d['banner'])) > 0:
+                    ips_banners[d['ip']] = d['banner']
+            except KeyError as ke:
+                continue
+        print("Added %d ips from this file" % (len(ips) - old_size))
+        old_size = len(ips)
+
     return ips, ips_banners
 
 """
@@ -142,7 +187,7 @@ def get_stats_helper(data):
     """
 
     :param data: object with loaded json data
-    :return:  count of devices with port 23 or 2323 using telnet protocol,
+    :return:    count of devices with port 23 or 2323 using telnet protocol,
                 count of devices with not empty banners
                 count of devices with empty banners
     """
@@ -190,53 +235,77 @@ def count_telnet23_banner(dir_path):
     return telnet_23, banners, banners_empty
 
 
-def get_counts(infected_ips, path_to_mirai, prefix_count, country_count):
+def get_counts(infected_ips, path_to_mirai, filter_by_port=False):
     """
-    Count infected ips by country and prefix
+    Count infected ips by country, prefix and asn
     :param infected_ips: set of ips
     :param path_to_mirai: absolute path to csv
-    :return:
+    :param filter_by_port: if true only rows with port 23 and 2323 are counted
+    :return: prefix_count, country_count, asn_count of type dict
     """
-    COUNTRY = 15
-    PREFIX = 17
+    prefix_count = Counter()
+    country_count = Counter()
+    asn_count = Counter()
+
     mirai_file = open(path_to_mirai, "r")
     mirai_reader = csv.reader(mirai_file, dialect='excel')
 
     for row in mirai_reader:
+        if filter_by_port and int(row[DST_PORT]) != 23 and int(row[DST_PORT]) != 2323:
+            continue  # skip this row, we don't care about this port
         if len(row[0]) > 2:
             if row[0] in infected_ips:
                 prefix_count[row[PREFIX]] += 1
                 country_count[row[COUNTRY]] += 1
+                asn_count[row[ASN]] += 1
                 # remove from the set to not count twice
                 infected_ips.remove(row[0])
-    print("Counting done. ")
-    return prefix_count, country_count
+    print("Counting prefixes, countries and asn numbers done. ")
+
+    return prefix_count, country_count, asn_count
 
 
-def count_asn(infected_ips, path_to_mirai, asn_counter):
-    ASN = 10
+def group_by(path_to_mirai, outfile, censys_ips, by=ASN):
+    mappings = dict()
+
+    mirai_file = open(path_to_mirai, "r")
+    mirai_reader = csv.reader(mirai_file, dialect='excel')
+
+    for row in mirai_reader:
+        # Checks
+        if not isinstance(row[0], str):
+            raise ValueError('Not a string: %s' % row[0])
+        if " " in row[0]:
+            raise ValueError("IP contains Whitespace %s" % row[0])
+
+        if row[0] in censys_ips:
+            if row[0] in mappings:
+                mappings[row[0]].add(row[by])
+            else:
+                mappings[row[0]] = set()
+                mappings[row[0]].add(row[by])
+
+    outfile = open(outfile, "w")
+    out_writer = csv.writer(outfile, dialect='excel')
+    for key, value in sorted(mappings.items(), key=lambda e: -(len(e[1]))):
+        out_writer.writerow([key] + list(value))
+
+
+def count_ports(infected_ips, path_to_mirai):
+    """
+    Gets stats in form of port_number => total of unique infected ips
+    :param infected_ips: list of infected ips from censys
+    :param path_to_mirai:
+    :return: dict()
+    """
+    port_count = dict()
     mirai_file = open(path_to_mirai, "r")
     mirai_reader = csv.reader(mirai_file, dialect='excel')
 
     for row in mirai_reader:
         if len(row[0]) > 2:
             if row[0] in infected_ips:
-                asn_counter[row[ASN]] += 1
-                # remove from the set to not count twice
-                infected_ips.remove(row[0])
-    print("Counting done. ")
-    return asn_counter
-
-
-def count_ports(infected_ips, path_to_mirai, port_count):
-    PORT = 3
-    mirai_file = open(path_to_mirai, "r")
-    mirai_reader = csv.reader(mirai_file, dialect='excel')
-
-    for row in mirai_reader:
-        if len(row[0]) > 2:
-            if row[0] in infected_ips:
-                port_count[row[PORT]] += 1
+                port_count[row[DST_PORT]] += 1
                 # remove from the set to not count twice
                 infected_ips.remove(row[0])
     print("Counting done. ")
@@ -247,6 +316,7 @@ def group_by_banners(infected_ips, banner_map):
     """
 
     :param infected_ips:
+    :param banner_map
     :return: a dictionary in form of dict[banner] = [list of ips with that banner]
     """
     #banner_map = load_censys_ips_with_banners(JSON_DATA_DIR)
@@ -254,12 +324,12 @@ def group_by_banners(infected_ips, banner_map):
     i = 0
     try:
         for key, value in banner_map.items():
-            i += 1
             if key in infected_ips:
                 if value in result:
                     result[value].append(key)
                 else:
                     result[value] = [key]
+            i += 1
     except ValueError as ve:
         print(i, "\t", ve)
         i += 1
@@ -290,6 +360,8 @@ def infected_banners_stats(infected, empty_banners):
     count_not_empty = count_infected - count_empty_banners
 
     return count_not_empty, count_empty_banners
+
+
 
 
 def prepare_censys_data():
@@ -323,8 +395,7 @@ def generate_report(censys_ips, censys_telnet23, censys_with_banners, censys_emp
         print("Filtering by date, retrieving records starting from " + _date_limit)
     print() #empty line
 
-    prefix_count = Counter()
-    country_count = Counter()
+
 
     mirai_ips = load_mirai_ips_filter_date_port(
         path_to_mirai,
@@ -335,7 +406,7 @@ def generate_report(censys_ips, censys_telnet23, censys_with_banners, censys_emp
     print("Loaded %d IPs from MIRAI." % len(mirai_ips))
 
     infected = match_mirai_censys(mirai_ips, censys_ips)
-    prefix_count, country_count = get_counts(infected.copy(), path_to_mirai, prefix_count, country_count)
+    prefix_count, country_count, asn_count = get_counts(infected.copy(), path_to_mirai)
     banners_count_not_empty, count_empty_banners = infected_banners_stats(infected, censys_empty_banners)
 
     print("Infected total: ", len(infected))
@@ -372,13 +443,15 @@ def export_counters(outfile_base_name, _counter, counter_name):
         out_writer.writerow([key, value])
 
 
+
+
 if __name__ == '__main__':
     # get all censys info
 
     censys_ips, censys_telnet23, censys_with_banners, censys_empty_banners,\
         _banners_map = prepare_censys_data()
     print("Censys IPs: ", len(censys_ips))
-
+    """
     print("Censys telnet+port23/2323 IPs: ", len(censys_telnet23))
     print("Censys with banners: ", len(censys_with_banners))
     print("Censys without banners: ", len(censys_empty_banners))
@@ -431,5 +504,8 @@ if __name__ == '__main__':
     for key, value in sorted(out_banners_map.items(), key=lambda e: -(len(e[1]))):
         out_writer.writerow([key, base64.b64decode(key)] + [len(value)] + value)
 
+    """
 
+    group_by(MIRAI_PATH, "ip_country_censys.csv",censys_ips, COUNTRY)
+    group_by(MIRAI_PATH, "ip_asn_censys.csv",censys_ips, ASN)
 
