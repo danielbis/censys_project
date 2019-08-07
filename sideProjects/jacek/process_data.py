@@ -6,8 +6,9 @@ import os
 import time
 from collections import Counter
 import pandas as pd
+import matplotlib.pyplot as plt
 
-JSON_DATA_DIR = "/Users/daniel/Desktop/sideProjects/jacek/json_data"
+JSON_DATA_DIR = "/Users/daniel/Desktop/sideProjects/jacek/json_data2"
 
 MIRAI_PATH = "/Users/daniel/Desktop/sideProjects/jacek/mirai_enriched_2018_07_03_2019.csv"
 # indices
@@ -31,7 +32,7 @@ def load_scan(file_path):
 
 
 def load_mirai_ips_filter_date_port(path_to_mirai,
-                                    date_limit="2019-03-04T00:00:00Z",
+                                    date_limit="2018-12-04T00:00:00Z",
                                     seen="fseen",
                                     filter_port=False,
                                     filter_date=False):
@@ -82,14 +83,17 @@ def load_mirai_ips_filter_date_port(path_to_mirai,
     return ips
 
 
-def load_censys_ips(dir_path):
+def load_censys_ips(dir_path, version=2):
     """
 
     :param dir_path:
     :return: set of unique ids from censys files
     """
     ips = set()  # stores elements without repetitions
+    ips_with_banner = set()
+    ips_no_banner = set()
     ips_banners = dict()
+    total_others = 0
     files = os.listdir(dir_path)  # list all files from the directory
     old_size = 0
     for _file in files:
@@ -98,6 +102,11 @@ def load_censys_ips(dir_path):
         print("Number of lines in the file: ", len(data))
         for d in data:
             d = json.loads(d)
+            if version == 2:
+                temp_ports = [int(p) for p in d['ports']]
+                if 23 not in temp_ports and 2323 not in temp_ports:
+                    total_others += 1  # we dont store them in set, this count may contain duplicates
+                    continue  # not using port 23 or 2323 -> skip it
             if not isinstance(d['ip'], str):
                 raise ValueError('Not a string: %s' % d['ip'])
             if " " in d['ip']:
@@ -106,133 +115,17 @@ def load_censys_ips(dir_path):
             ips.add(d['ip'])
 
             try:
-                if len(base64.b64decode(d['banner'])) > 0:
+                if len(d['banner']) > 0:
                     ips_banners[d['ip']] = d['banner']
+                    ips_with_banner.add(d['ip'])
+                else:
+                    ips_no_banner.add(d['ip'])
             except KeyError as ke:
                 continue
         print("Added %d ips from this file" % (len(ips) - old_size))
         old_size = len(ips)
 
-    return ips, ips_banners
-
-
-def load_censys_ips_v2(dir_path):
-    """
-
-    :param dir_path:
-    :return: set of unique ids from censys files
-    """
-    ips = set()  # stores elements without repetitions
-    ips_banners = dict()
-    files = os.listdir(dir_path)  # list all files from the directory
-    old_size = 0
-    for _file in files:
-        print("processing file: ", _file)
-        data = load_scan(dir_path + "/" + _file)
-        print("Number of lines in the file: ", len(data))
-        for d in data:
-            d = json.loads(d)
-            if 23 or 2323 not in d["ports"]:
-                continue  # not using port 23 or 2323 -> skip it
-            if not isinstance(d['ip'], str):
-                raise ValueError('Not a string: %s' % d['ip'])
-            if " " in d['ip']:
-                raise ValueError("IP contains Whitespace %s" %d['ip'])
-            # passed the checks, add to the set
-            ips.add(d['ip'])
-
-            try:
-                if len(base64.b64decode(d['banner'])) > 0:
-                    ips_banners[d['ip']] = d['banner']
-            except KeyError as ke:
-                continue
-        print("Added %d ips from this file" % (len(ips) - old_size))
-        old_size = len(ips)
-
-    return ips, ips_banners
-
-"""
-def load_censys_ips_with_banners(dir_path):
-    \"""
-
-    :param dir_path: path to dir with censys json data
-    :return: Returns a dictionary in form of dict["someIP"] = "some banner"
-    \"""
-    ips = dict()
-    files = os.listdir(dir_path)
-    old_size = 0
-    for _file in files:
-        print("processing file: ", _file)
-        data = load_scan(dir_path + "/" + _file)
-        print("Number of lines in the file: ", len(data))
-        for d in data:
-            d = json.loads(d)
-            if not isinstance(d['ip'], str):
-                print('Not a string!!!', d['ip'])
-                break
-            if " " in d['ip']:
-                print("Whitespace", d['ip'])
-                break
-            try:
-                if len(base64.b64decode(d['banner'])) > 0:
-                    ips[d['ip']] = d['banner']
-            except KeyError as ke:
-                continue
-        print("Added %d ip-banner pair from this file" % (len(ips) - old_size))
-        old_size = len(ips)
-    return ips
-"""
-
-def get_stats_helper(data):
-    """
-
-    :param data: object with loaded json data
-    :return:    count of devices with port 23 or 2323 using telnet protocol,
-                count of devices with not empty banners
-                count of devices with empty banners
-    """
-    # Using sets therefore no duplicates possible by definition
-    _telnet_23 = set()
-    _banners = set()
-    _banners_empty = set()
-
-    for d in data:
-        d = json.loads(d)
-        if (int(d['port_number']) == 23 or int(d['port_number']) == 2323) and d['protocol'] == 'telnet':
-            _telnet_23.add(d['ip'])
-        try:
-            if len(base64.b64decode(d['banner'])) > 0:
-                _banners.add(d['ip'])
-            else:
-                _banners_empty.add(d['ip'])
-        except KeyError as ke:
-            _banners_empty.add(d['ip'])
-
-    return _telnet_23, _banners, _banners_empty
-
-
-def count_telnet23_banner(dir_path):
-    """
-    Gets global number of devices with telnet and protocol 23
-    :param dir_path:
-    :return:
-    """
-    telnet_23 = set()
-    banners = set()
-    banners_empty = set()
-
-    files = os.listdir(dir_path)
-    files = list(filter(lambda x: x.split(".")[1] == "json", files))
-
-    for _file in files:
-        print("processing file: ", _file)
-        data = load_scan(dir_path + "/" + _file)
-        _telnet_23, _banners, _banners_empty = get_stats_helper(data)
-        telnet_23 = telnet_23.union(_telnet_23)
-        banners = banners.union(_banners)
-        banners_empty = banners_empty.union(_banners_empty)
-
-    return telnet_23, banners, banners_empty
+    return ips, ips_with_banner, ips_no_banner, ips_banners, total_others
 
 
 def get_counts(infected_ips, path_to_mirai, filter_by_port=False):
@@ -265,7 +158,15 @@ def get_counts(infected_ips, path_to_mirai, filter_by_port=False):
     return prefix_count, country_count, asn_count
 
 
-def group_by(path_to_mirai, outfile, censys_ips, by=ASN):
+def group_by(path_to_mirai, outfile, _censys_ips, by=ASN):
+    """
+    Match ip to different ASNs or Countries where they appeared
+    :param path_to_mirai:
+    :param outfile: path to output file
+    :param _censys_ips: infected ips matched between censys and miari
+    :param by: group by ASN or Country of origin
+    :return: void (exports to a csv)
+    """
     mappings = dict()
 
     mirai_file = open(path_to_mirai, "r")
@@ -278,7 +179,7 @@ def group_by(path_to_mirai, outfile, censys_ips, by=ASN):
         if " " in row[0]:
             raise ValueError("IP contains Whitespace %s" % row[0])
 
-        if row[0] in censys_ips:
+        if row[0] in _censys_ips:
             if row[0] in mappings:
                 mappings[row[0]].add(row[by])
             else:
@@ -362,24 +263,68 @@ def infected_banners_stats(infected, empty_banners):
     return count_not_empty, count_empty_banners
 
 
+def plot_bar(_values_list, key, value, title,path):
+    """
+
+    :param _values_list:
+    :param key:
+    :param value:
+    :param title:
+    :param path:
+    :return:
+    """
+    if len(_values_list) > 0:
+        _data = pd.DataFrame(_values_list)
+        _data.columns = [key, value]
+
+        _data.plot(title=title, x=key, grid=True, kind='bar')
+        plt.tight_layout()
+        plt.savefig(path, bbox_inches='tight')
+        plt.clf()
+        plt.close()
+    else:
+        print("Empty list in plot_bar.")
 
 
-def prepare_censys_data():
-    _censys_ips, _ips_banners = load_censys_ips(JSON_DATA_DIR)
-    censys_telnet23, censys_with_banners, censys_empty_banners = count_telnet23_banner(JSON_DATA_DIR)
+def plot_duration(_infected_ips, path, _title="Hours of Activity"):
 
-    return _censys_ips, censys_telnet23, censys_with_banners, censys_empty_banners,_ips_banners
+    mirai_data = pd.read_csv(MIRAI_PATH)
+    infected_ips = pd.DataFrame(list(_infected_ips))
+    infected_ips.columns = ["infected"]
+    mirai_data = mirai_data.drop_duplicates(subset=['ip'])
+    mirai_data["fseen"] = pd.to_datetime(mirai_data["fseen"], infer_datetime_format=False)
+    mirai_data["lseen"] = pd.to_datetime(mirai_data["lseen"], infer_datetime_format=False)
+    mirai_data = mirai_data[mirai_data["ip"].isin(infected_ips["infected"])]  # only infected left
+    time_diff = pd.Series(mirai_data['lseen'] - mirai_data['fseen'], name="duration")
+    time_diff = time_diff.to_frame()
+    time_diff.describe().to_csv(path + "_with_zeros.csv")
+    time_diff = time_diff[time_diff["duration"] != pd.Timedelta('0 days 00:00:00')]
+    time_diff.describe().to_csv(path + "_no_zeros.csv")
+
+    # START PLOTTING
+    (time_diff["duration"] / pd.Timedelta(hours=1)).plot(kind="hist",
+                                                     title=_title,
+                                                     bins=range(0, 200, 2)
+                                                     ).set_xlabel("Active in hours")
+    plt.tight_layout()
+    plt.savefig(path + ".png", bbox_inches='tight')
+    plt.clf()
+    plt.close()
 
 
-def generate_report(censys_ips, censys_telnet23, censys_with_banners, censys_empty_banners,
-                    path_to_mirai, _date_limit="2019-03-04T00:00:00Z",
-                    _seen="fseen", _filter_port=False, _filter_date=False, outfile_base_name="output"):
+
+
+
+def generate_report(censys_ips, censys_with_banners, censys_empty_banners, _banners_map,
+                    path_to_mirai, _date_limit="2018-12-04T00:00:00Z", _seen="fseen",
+                    _filter_port=False, _filter_date=False, outfile_base_name="output"):
     """
 
     :param censys_ips: set of all censys ips
     :param censys_telnet23: set of ips with port 23/2323
     :param censys_with_banners: set of censys ips with banners
     :param censys_empty_banners: set of censys ips without banners
+    :param _banners_map: ip --> banner
     :param path_to_mirai:
     :param _date_limit: the oldest date to look for
     :param _seen: fseen or lseen used for filtering, fseen is default
@@ -393,7 +338,8 @@ def generate_report(censys_ips, censys_telnet23, censys_with_banners, censys_emp
         print("Filtering by ports 23 and 2323")
     if _filter_date:
         print("Filtering by date, retrieving records starting from " + _date_limit)
-    print() #empty line
+
+    print()  # empty line
 
 
 
@@ -405,13 +351,19 @@ def generate_report(censys_ips, censys_telnet23, censys_with_banners, censys_emp
         filter_date=_filter_date)
     print("Loaded %d IPs from MIRAI." % len(mirai_ips))
 
+    # intersection
     infected = match_mirai_censys(mirai_ips, censys_ips)
+    # stats
     prefix_count, country_count, asn_count = get_counts(infected.copy(), path_to_mirai)
+    # Line below limits sets of banners to the infected ones
     banners_count_not_empty, count_empty_banners = infected_banners_stats(infected, censys_empty_banners)
 
     print("Infected total: ", len(infected))
     print("Infected with banners", banners_count_not_empty)
     print("Infected without banners", count_empty_banners)
+
+    # maps banner to a list of ips (banner --> [ip1, ip2]
+    banners2ips = group_by_banners(infected_ips=infected, banner_map=_banners_map)
 
     ########################## Export infected IPs ###############################################
     outfile = open(outfile_base_name + "_infected.csv", "w")
@@ -424,88 +376,115 @@ def generate_report(censys_ips, censys_telnet23, censys_with_banners, censys_emp
         out_writer.writerow([inf])
 
     ########################## Export Counters ###############################################
+    export_banners(outfile_base_name, banners2ips, "banners2ips", version=2)
     export_counters(outfile_base_name, prefix_count, "prefix_count")
     export_counters(outfile_base_name, country_count, "country_count")
+    export_counters(outfile_base_name, asn_count, "asn_count")
 
+    # Add plots for below
+    temp_list = []
     print("\n################# Prefix top 10 #########################")
     for key, value in prefix_count.most_common(10):
         print(key, "\t", value)
+        temp_list.append((key, value))
 
-    print("\n################# Prefix top 10 #########################")
+    plot_bar(temp_list, key="Prefix", value="Count",
+             title="Number of infected devices grouped by Prefix",
+             path = outfile_base_name + "_prefix.png")
+    temp_list = []
+
+    print("\n################# Country top 10 #########################")
     for key, value in country_count.most_common(10):
         print(key, "\t", value)
+        temp_list.append((key, value))
 
+    plot_bar(temp_list, key="Country", value="Count",
+             title="Number of infected devices grouped by country",
+             path=outfile_base_name + "_country.png")
+    temp_list = []
+
+    print("\n################# ASN top 10 #########################")
+    for key, value in asn_count.most_common(10):
+        print(key, "\t", value)
+        temp_list.append((key, value))
+
+    plot_bar(temp_list, key="ASN", value="Count",
+             title="Number of infected devices grouped by ASN number",
+             path=outfile_base_name + "_asn.png")
+    temp_list = []
+
+    ### Plot durations for this data
+    plot_duration(infected, outfile_base_name + "_duration")
 
 def export_counters(outfile_base_name, _counter, counter_name):
+    """
+
+    :param outfile_base_name:
+    :param _counter:
+    :param counter_name:
+    :return:
+    """
     outfile = open(outfile_base_name + "_" + counter_name + ".csv", "w")
     out_writer = csv.writer(outfile, dialect='excel')
     for key, value in _counter.most_common():
         out_writer.writerow([key, value])
+    print("Exported counters: %s" % counter_name)
 
 
+def export_banners(outfile_base_name, banners_map, counter_name, version=2):
+    """
+
+    :param outfile_base_name:
+    :param banners_map:
+    :param counter_name:
+    :param version: old (1) or new (2) censys data
+    :return:
+    """
+    outfile = open(outfile_base_name + "_" + counter_name + ".csv", "w")
+    out_writer = csv.writer(outfile, dialect='excel')
+
+    # iterate over sorted map
+    for key, value in sorted(banners_map.items(), key=lambda e: -(len(e[1]))):
+        if version == 1:
+            out_writer.writerow([base64.b64decode(key)] + [len(value)] + value)
+        else:
+            out_writer.writerow([key] + [len(value)] + value)
+    print("Exported [banners --> IP_list] map.")
 
 
 if __name__ == '__main__':
     # get all censys info
 
-    censys_ips, censys_telnet23, censys_with_banners, censys_empty_banners,\
-        _banners_map = prepare_censys_data()
-    print("Censys IPs: ", len(censys_ips))
-    """
-    print("Censys telnet+port23/2323 IPs: ", len(censys_telnet23))
+    censys_ips, censys_with_banners, censys_empty_banners, _banners_map, not23count = \
+        load_censys_ips(JSON_DATA_DIR)
+
+    print("Censys IPs (port 23 or 2323): ", len(censys_ips))
+    print("Censys IPs (other ports): ", not23count)
     print("Censys with banners: ", len(censys_with_banners))
     print("Censys without banners: ", len(censys_empty_banners))
-    generate_report(censys_ips, censys_telnet23, censys_with_banners, censys_empty_banners,
-                    MIRAI_PATH, _date_limit="2019-03-04T00:00:00Z",
-                    _seen="fseen", _filter_port=False, _filter_date=False, outfile_base_name="results/all/all")
-    
 
-    generate_report(censys_ips, censys_telnet23, censys_with_banners, censys_empty_banners,
-                    MIRAI_PATH, _date_limit="2019-03-04T00:00:00Z",
+    # Use all data
+    generate_report(censys_ips, censys_with_banners, censys_empty_banners, _banners_map,
+                    MIRAI_PATH, _date_limit="2018-12-04T00:00:00Z",
+                    _seen="fseen", _filter_port=False, _filter_date=False, outfile_base_name="new_results/all/all")
+
+    # Match only data from MIRAI where port 23 or 2323 were used
+    generate_report(censys_ips, censys_with_banners, censys_empty_banners, _banners_map,
+                    MIRAI_PATH, _date_limit="2018-12-04T00:00:00Z",
                     _seen="fseen", _filter_port=True, _filter_date=False,
-                    outfile_base_name="results/port23_only/port23")
-    generate_report(censys_ips, censys_telnet23, censys_with_banners, censys_empty_banners,
-                    MIRAI_PATH, _date_limit="2019-03-04T00:00:00Z",
+                    outfile_base_name="new_results/port23_only/port23")
+
+    # Match only data from MIRAI after date [_date_limit]
+    generate_report(censys_ips, censys_with_banners, censys_empty_banners, _banners_map,
+                    MIRAI_PATH, _date_limit="2018-12-04T00:00:00Z",
                     _seen="fseen", _filter_port=False, _filter_date=True,
-                    outfile_base_name="results/past04_only/past04")
-    generate_report(censys_ips, censys_telnet23, censys_with_banners, censys_empty_banners,
-                    MIRAI_PATH, _date_limit="2019-03-04T00:00:00Z",
+                    outfile_base_name="new_results/past04_only/past04")
+
+    # Match only data from MIRAI where port 23 or 2323 were used and after date [_date_limit]
+    generate_report(censys_ips, censys_with_banners, censys_empty_banners, _banners_map,
+                    MIRAI_PATH, _date_limit="2018-12-04T00:00:00Z",
                     _seen="fseen", _filter_port=True, _filter_date=True,
-                    outfile_base_name="results/port23_past04_only/port23_past04")
+                    outfile_base_name="new_results/port23_past04_only/port23_past04")
 
-    ########################## Export ASN, PORT, BANNERS ##########################################
-    mirai_ips = load_mirai_ips_filter_date_port(
-        MIRAI_PATH,
-        filter_port=True)
-    print("Loaded %d IPs from MIRAI." % len(mirai_ips))
 
-    asn_counter = Counter()
-    port_counter = Counter()
-
-    _infected = match_mirai_censys(mirai_ips, censys_ips)
-
-    asn_count = count_asn(_infected.copy(), MIRAI_PATH, asn_counter)
-    port_count = count_ports(_infected.copy(), MIRAI_PATH, port_counter)
-
-    export_counters("results/port23_only/asn.csv", asn_count, "asn_count")
-    export_counters("results/port23_only/ports.csv", port_count, "port_count")
-
-    print("\n################# ASN top 10 #########################")
-    for key, value in asn_count.most_common(10):
-        print(key, "\t", value)
-
-    print("\n################# PORT top 10 #########################")
-    for key, value in port_count.most_common(10):
-        print(key, "\t", value)
-
-    out_banners_map = group_by_banners(_infected, _banners_map)
-    outfile = open("results/port23_only/banner_groups.csv", "w")
-    out_writer = csv.writer(outfile, dialect='excel')
-    for key, value in sorted(out_banners_map.items(), key=lambda e: -(len(e[1]))):
-        out_writer.writerow([key, base64.b64decode(key)] + [len(value)] + value)
-
-    """
-
-    group_by(MIRAI_PATH, "ip_country_censys.csv",censys_ips, COUNTRY)
-    group_by(MIRAI_PATH, "ip_asn_censys.csv",censys_ips, ASN)
 
