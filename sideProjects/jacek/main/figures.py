@@ -5,44 +5,19 @@
 
 
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 
 
-# In[3]:
-
+# In[3]: Read in miari and list of infected ips
 
 mirai_data = pd.read_csv("/Users/daniel/Desktop/sideProjects/jacek/mirai_enriched_2018_07_03_2019.csv")
-
-
-# In[4]:
-
-
 infected_ips = pd.read_csv("/Users/daniel/Desktop/sideProjects/jacek/results/all_infected_copy.csv")
 
-
-# In[68]:
-
-
-
-
-
-# In[5]:
-
-
+# drop duplicates from mirai ?
 mirai_data = mirai_data.drop_duplicates(subset=['ip'])
 mirai_infected = mirai_data[mirai_data["ip"].isin(infected_ips["infected"])]
 
-
-# In[61]:
-
-
-
-
-
-# In[7]:
-
-
+# could do this directly in the report
 infected_group_by_country = mirai_infected.groupby(by=['country'])
 infected_group_by_prefix = mirai_infected.groupby(by=['prefix'])
 infected_group_by_asn = mirai_infected.groupby(by=['asn'])
@@ -52,11 +27,6 @@ infected_group_by_asn = mirai_infected.groupby(by=['asn'])
 
 
 mirai_count = infected_group_by_asn.count()
-
-
-# In[9]:
-
-
 print(mirai_count.sort_values(by=['ip'], ascending=False).head(10))
 
 
@@ -64,11 +34,6 @@ print(mirai_count.sort_values(by=['ip'], ascending=False).head(10))
 
 
 mirai_country_plot_data = mirai_count.sort_values(by=['ip'], ascending=False).iloc[:,0]
-
-
-# In[11]:
-
-
 print(mirai_country_plot_data.head(5))
 
 
@@ -86,7 +51,6 @@ plt.close()
 # In[13]:
 
 
-import seaborn as sns
 
 
 # In[15]:

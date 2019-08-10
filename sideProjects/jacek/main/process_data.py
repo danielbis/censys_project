@@ -9,6 +9,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 JSON_DATA_DIR = "/Users/daniel/Desktop/sideProjects/jacek/json_data2"
+JSON_TEST_DIR = "/Users/daniel/Desktop/sideProjects/jacek/json_test"
 
 MIRAI_PATH = "/Users/daniel/Desktop/sideProjects/jacek/mirai_enriched_2018_07_03_2019.csv"
 # indices
@@ -18,7 +19,6 @@ ASN = 10
 FSEEN = 7
 LSEEN = 8
 DST_PORT = 3
-
 
 def load_scan(file_path):
     """
@@ -321,7 +321,6 @@ def generate_report(censys_ips, censys_with_banners, censys_empty_banners, _bann
     """
 
     :param censys_ips: set of all censys ips
-    :param censys_telnet23: set of ips with port 23/2323
     :param censys_with_banners: set of censys ips with banners
     :param censys_empty_banners: set of censys ips without banners
     :param _banners_map: ip --> banner
@@ -452,6 +451,107 @@ def export_banners(outfile_base_name, banners_map, counter_name, version=2):
     print("Exported [banners --> IP_list] map.")
 
 
+def load_data_and_count_devices(_censys_ips, dir_path_censys, path_to_mirai, _date_limit, _seen, _filter_port, _filter_date):
+
+    mirai_ips = load_mirai_ips_filter_date_port(
+        path_to_mirai,
+        date_limit=_date_limit,
+        seen=_seen,
+        filter_port=_filter_port,
+        filter_date=_filter_date)
+    print("Loaded %d IPs from MIRAI." % len(mirai_ips))
+
+    # intersection
+    infected = match_mirai_censys(mirai_ips, _censys_ips)
+    print("found %d infected devices" % len(infected))
+    print("Getting device statistics... ")
+    count_devices(dir_path_censys, infected)
+
+
+def count_devices(dir_path_censys, infected_ips):
+
+    ASN_TOP10 = [12389, 4837, 4134, 8452, 3462, 4766, 18403, 8376, 24444, 9121]
+    # to find devices for given most common asns
+    asn_device_map = dict()
+    for a in ASN_TOP10:
+        asn_device_map[a] = Counter()
+    # get censys files
+    files = os.listdir(dir_path_censys)  # list all files from the directory
+    # some sets and counters
+    devices_counter = Counter()  # count devices
+    found = set()  # helper to keep devices unique
+    multi_device_ips = set()  # get ips with multiple devices
+    multi_device_asn = set()  # get asns with multiple devices
+    multi_country_counter = Counter()  # count countries with multiple devices
+
+    for _file in files:
+        data = load_scan(dir_path_censys + "/" + _file)
+        for d in data:
+            d = json.loads(d)
+            if d['ip'] in infected_ips:  # check if that ip was infected
+                try:
+                    if ',' in d['description']:
+                        devices = d['description'].split(',')
+                        if devices[0] == devices[1]: # repetitions mikrotik, mikrotik ...
+                            if d['ip'] + devices[0] not in found:  # don't count repetitions
+                                devices_counter[devices[0]] += 1
+                                found.add(d['ip'] + devices[0])
+                                if int(d['asn']) in ASN_TOP10:
+                                    asn_device_map[int(d['asn'])][devices[0]] += 1
+                        else:
+                            for dev in devices:
+                                if d['ip'] + dev not in found:  # don't count repetitions
+                                    devices_counter[dev] += 1
+                                    found.add(d['ip'] + dev)
+                                    if int(d['asn']) in ASN_TOP10:
+                                        asn_device_map[int(d['asn'])][dev] += 1
+                                    multi_device_ips.add(d['ip'])
+                                    multi_device_asn.add(d['asn'])
+                                    multi_country_counter[d['country_code']] += 1
+                    elif ' ' in d['description']:
+                        split_ = d['description'].split(' ')
+                        if len(split_) == 2:
+                            if d['ip'] + d['description'] not in found:  # don't count repetitions
+                                devices_counter[d['description']] += 1
+                                found.add(d['ip'] + d['description'])
+                                if int(d['asn']) in ASN_TOP10:
+                                    asn_device_map[int(d['asn'])][d['description']] += 1
+                        else:  # length longer than 3, expect repetition
+                            if d['ip'] + split_[0] not in found:  # don't count repetitions
+                                devices_counter[split_[0]] += 1
+                                found.add(d['ip'] + split_[0])
+                                if int(d['asn']) in ASN_TOP10:
+                                    asn_device_map[int(d['asn'])][split_[0]] += 1
+                except KeyError as ke:  # that entry does not have description field
+                    continue
+
+    print("Number of IPs attacked on multiple devices: ", len(multi_device_ips))
+    pd.DataFrame(list(multi_device_ips)).to_csv("multi_device_ips.csv")
+    pd.DataFrame(list(multi_device_asn)).to_csv("multi_device_asn.csv")
+
+    temp_list = []
+    for key, value in devices_counter.most_common(10):
+        print(key, "\t", value)
+        temp_list.append((key, value))
+
+    plot_bar(temp_list, key="Device", value="Count",
+             title="Top 10 most often attacked devices",
+             path="devices.png")
+
+    temp_list = []
+    for key, value in multi_country_counter.most_common(10):
+        print(key, "\t", value)
+        temp_list.append((key, value))
+
+    plot_bar(temp_list, key="Country Code", value="Count",
+             title="Countries where one IP was attacked on multiple devices",
+             path="multi_country.png")
+
+    for key, value in asn_device_map.items():
+        print("Most common devices with asn number %d" % key)
+        for k, v in value.most_common():
+            print(k, '\t', v)
+
 if __name__ == '__main__':
     # get all censys info
 
@@ -462,7 +562,10 @@ if __name__ == '__main__':
     print("Censys IPs (other ports): ", not23count)
     print("Censys with banners: ", len(censys_with_banners))
     print("Censys without banners: ", len(censys_empty_banners))
+    load_data_and_count_devices(censys_ips, JSON_DATA_DIR, MIRAI_PATH, _date_limit="2018-12-04T00:00:00Z",
+                                _seen="fseen", _filter_port=True, _filter_date=True)
 
+    """
     # Use all data
     generate_report(censys_ips, censys_with_banners, censys_empty_banners, _banners_map,
                     MIRAI_PATH, _date_limit="2018-12-04T00:00:00Z",
@@ -486,5 +589,5 @@ if __name__ == '__main__':
                     _seen="fseen", _filter_port=True, _filter_date=True,
                     outfile_base_name="new_results/port23_past04_only/port23_past04")
 
-
+    """
 
